@@ -15,7 +15,7 @@ CHAT_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
 @dataclass
 class Token:
     value: str
-    expires_at: float  # unix timestamp
+    expires_at: float
 
 
 class GigaChatClient:
@@ -35,11 +35,9 @@ class GigaChatClient:
             "Authorization": f"Basic {self._auth_key}",
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
-            # важно для GigaChat OAuth
             "RqUID": str(uuid.uuid4()),
         }
 
-        # важно: grant_type обязателен
         data = {
             "scope": self._scope,
             "grant_type": "client_credentials",
