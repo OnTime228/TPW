@@ -1,0 +1,16 @@
+# Local env
+.env
+
+# Postgres volume (if any)
+
+# Data file (optional to commit)
+data/*.json
+data/*.zip
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
