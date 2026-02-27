@@ -3,57 +3,42 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from dotenv import load_dotenv
+
+def _env(name: str, default: str | None = None) -> str:
+    v = os.getenv(name, default)
+    if v is None:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return v
 
 
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
-    database_url: str
-
-    # Paths inside the container
-    migrations_path: str
+    pg_host: str
+    pg_port: int
+    pg_db: str
+    pg_user: str
+    pg_password: str
     data_path: str
-
-    # Startup behaviour
-    auto_migrate: bool
-    auto_load_data: bool
     force_reload: bool
 
-    # Optional LLM fallback (rule-based parser is the default)
-    llm_provider: str | None
-    llm_api_key: str | None
-    llm_base_url: str | None
-    llm_model: str | None
+    @property
+    def dsn(self) -> str:
+        return f"postgresql://{self.pg_user}:{self.pg_password}@{self.pg_host}:{self.pg_port}/{self.pg_db}"
 
 
-def _env_bool(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).strip() == "1"
-
-
-def get_settings() -> Settings:
-    """Load configuration from environment (.env is supported)."""
-
-    load_dotenv(override=False)
-
-    bot_token = os.getenv("BOT_TOKEN", "").strip()
-    database_url = os.getenv("DATABASE_URL", "").strip()
-
-    if not database_url:
-        raise RuntimeError("DATABASE_URL is required")
-    if not bot_token:
-        raise RuntimeError("BOT_TOKEN is required")
+def load_settings() -> Settings:
+    token = _env("BOT_TOKEN", "")
+    if not token.strip():
+        raise RuntimeError("BOT_TOKEN is empty. Put it into .env")
 
     return Settings(
-        bot_token=bot_token,
-        database_url=database_url,
-        migrations_path=os.getenv("MIGRATIONS_PATH", "/migrations"),
-        data_path=os.getenv("DATA_PATH", "/data/videos.json"),
-        auto_migrate=_env_bool("AUTO_MIGRATE", "1"),
-        auto_load_data=_env_bool("AUTO_LOAD_DATA", "1"),
-        force_reload=_env_bool("FORCE_RELOAD", "0"),
-        llm_provider=os.getenv("LLM_PROVIDER"),
-        llm_api_key=os.getenv("LLM_API_KEY"),
-        llm_base_url=os.getenv("LLM_BASE_URL"),
-        llm_model=os.getenv("LLM_MODEL"),
+        bot_token=token.strip(),
+        pg_host=_env("POSTGRES_HOST", "db"),
+        pg_port=int(_env("POSTGRES_PORT", "5432")),
+        pg_db=_env("POSTGRES_DB", "videos_db"),
+        pg_user=_env("POSTGRES_USER", "postgres"),
+        pg_password=_env("POSTGRES_PASSWORD", "postgres"),
+        data_path=_env("DATA_PATH", "/data/videos.json"),
+        force_reload=_env("FORCE_RELOAD", "0").strip() in ("1", "true", "True", "yes", "YES"),
     )

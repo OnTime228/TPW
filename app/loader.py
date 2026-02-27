@@ -49,22 +49,42 @@ def parse_dt(v: Any) -> Optional[datetime]:
         return v
     if isinstance(v, str):
         s = v.strip()
+        if s == "":
+            return None
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         return datetime.fromisoformat(s)
     raise TypeError(f"Unexpected datetime value type: {type(v)}")
 
 
+def to_int(v: Any, default: int = 0) -> int:
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v)
+    if isinstance(v, str):
+        s = v.strip()
+        if s == "":
+            return default
+        s = s.replace(" ", "")
+        return int(s)
+    return int(v)
+
+
 def _iter_video_records(videos: list[dict]) -> Iterable[tuple]:
     for v in videos:
         yield (
-            v["id"],
-            v["creator_id"],
+            str(v.get("id")),                 # UUID -> TEXT
+            str(v.get("creator_id")),         # UUID/строка -> TEXT
             parse_dt(v.get("video_created_at")),
-            int(v.get("views_count", 0)),
-            int(v.get("likes_count", 0)),
-            int(v.get("comments_count", 0)),
-            int(v.get("reports_count", 0)),
+            to_int(v.get("views_count")),
+            to_int(v.get("likes_count")),
+            to_int(v.get("comments_count")),
+            to_int(v.get("reports_count")),
             parse_dt(v.get("created_at")),
             parse_dt(v.get("updated_at")),
         )
@@ -74,16 +94,16 @@ def _iter_snapshot_records(videos: list[dict]) -> Iterable[tuple]:
     for v in videos:
         for s in v.get("snapshots", []):
             yield (
-                s["id"],
-                s["video_id"],
-                int(s.get("views_count", 0)),
-                int(s.get("likes_count", 0)),
-                int(s.get("comments_count", 0)),
-                int(s.get("reports_count", 0)),
-                int(s.get("delta_views_count", 0)),
-                int(s.get("delta_likes_count", 0)),
-                int(s.get("delta_comments_count", 0)),
-                int(s.get("delta_reports_count", 0)),
+                str(s.get("id")),             # UUID -> TEXT
+                str(s.get("video_id")),       # UUID -> TEXT (FK на videos.id)
+                to_int(s.get("views_count")),
+                to_int(s.get("likes_count")),
+                to_int(s.get("comments_count")),
+                to_int(s.get("reports_count")),
+                to_int(s.get("delta_views_count")),
+                to_int(s.get("delta_likes_count")),
+                to_int(s.get("delta_comments_count")),
+                to_int(s.get("delta_reports_count")),
                 parse_dt(s.get("created_at")),
                 parse_dt(s.get("updated_at")),
             )
@@ -95,7 +115,6 @@ async def load_data_if_needed(
     data_path: str,
     force_reload: bool = False,
 ) -> LoadStats:
-
     async with pool.acquire() as conn:
         existing = await conn.fetchval("SELECT COUNT(*) FROM videos")
         if existing and not force_reload:
@@ -115,7 +134,6 @@ async def load_data_if_needed(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Clean reload (order matters because FK)
             await conn.execute("TRUNCATE TABLE video_snapshots, videos CASCADE")
 
             await conn.copy_records_to_table(

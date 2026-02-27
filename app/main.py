@@ -2,69 +2,69 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 
 import asyncpg
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 
-from db import create_pool_with_retry, run_migrations
-from loader import load_data_if_needed
-from nl2sql import build_query
-from settings import get_settings
+from app.settings import load_settings
+from app.loader import load_data_if_needed
+from app.nl2sql import nl_to_query
 
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("scarecrow_bot")
 
 
+async def apply_migrations(conn: asyncpg.Connection) -> None:
+    migrations_dir = Path("/migrations")
+    files = sorted(migrations_dir.glob("*.sql"))
+    if not files:
+        raise RuntimeError("No migrations found in /migrations")
+
+    for f in files:
+        sql = f.read_text(encoding="utf-8")
+        await conn.execute(sql)
+        logger.info("Running migration: %s", f.name)
+
+
 async def handle_message(message: Message, pool: asyncpg.Pool) -> None:
-    text = (message.text or "").strip()
-
-    # Requirement: one request -> one numeric answer.
-    # For commands we also return a number to keep the protocol strict.
-    if not text:
-        await message.answer("0")
-        return
-
+    q = nl_to_query(message.text or "")
     try:
-        built = build_query(text)
-        logger.info("NL2SQL (%s): %s", built.debug, text)
-        value = await pool.fetchval(built.sql, *built.args)
-        if value is None:
-            value = 0
+        async with pool.acquire() as conn:
+            params = []
+            for k in sorted(q.params.keys(), key=lambda x: int(x[1:])):  # "$1","$2",...
+                params.append(q.params[k])
+            val = await conn.fetchval(q.sql, *params)
+            if val is None:
+                val = 0
+    except Exception:
+        logger.exception("Query failed")
+        val = 0
 
-        # Ensure the response is a plain number
-        await message.answer(str(int(value)))
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Failed to process query: %r", e)
-        await message.answer("0")
+    await message.answer(str(int(val)))
 
 
 async def main() -> None:
-    settings = get_settings()
+    settings = load_settings()
 
-    pool = await create_pool_with_retry(settings.database_url)
+    pool = await asyncpg.create_pool(dsn=settings.dsn, min_size=1, max_size=10)
 
-    if settings.auto_migrate:
-        await run_migrations(pool, settings.migrations_path)
+    async with pool.acquire() as conn:
+        await apply_migrations(conn)
 
-    if settings.auto_load_data:
-        stats = await load_data_if_needed(pool, data_path=settings.data_path, force_reload=settings.force_reload)
-        logger.info("Loaded: videos=%s snapshots=%s", stats.videos, stats.snapshots)
+    stats = await load_data_if_needed(pool, data_path=settings.data_path, force_reload=settings.force_reload)
+    logger.info("Loaded: videos=%s snapshots=%s", stats.videos, stats.snapshots)
 
     bot = Bot(token=settings.bot_token)
     dp = Dispatcher()
 
-    dp.message.register(handle_message)
+    @dp.message()
+    async def _any(message: Message) -> None:
+        await handle_message(message, pool)
 
-    try:
-        await dp.start_polling(bot, pool=pool)
-    finally:
-        await bot.session.close()
-        await pool.close()
+    logger.info("Start polling")
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
