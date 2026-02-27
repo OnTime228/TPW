@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from typing import Optional, Dict, Any, Tuple
 
 
@@ -10,6 +10,22 @@ from typing import Optional, Dict, Any, Tuple
 class Query:
     sql: str
     params: Dict[str, Any]
+
+
+_RU_MONTHS = {
+    "январ": 1,
+    "феврал": 2,
+    "март": 3,
+    "апрел": 4,
+    "ма": 5,        # май
+    "июн": 6,       # июнь
+    "июл": 7,       # июль
+    "август": 8,
+    "сентябр": 9,
+    "октябр": 10,
+    "ноябр": 11,
+    "декабр": 12,
+}
 
 
 def _parse_int(text: str) -> Optional[int]:
@@ -22,22 +38,6 @@ def _parse_date_yyyy_mm_dd(text: str) -> Optional[date]:
     if not m:
         return None
     return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-
-
-_RU_MONTHS = {
-    "январ": 1,
-    "феврал": 2,
-    "март": 3,
-    "апрел": 4,
-    "ма": 5,
-    "июн": 6,
-    "июл": 7,
-    "август": 8,
-    "сентябр": 9,
-    "октябр": 10,
-    "ноябр": 11,
-    "декабр": 12,
-}
 
 
 def _parse_date_ru(text: str) -> Optional[date]:
@@ -72,8 +72,38 @@ def _extract_date_range(text: str) -> Tuple[Optional[date], Optional[date]]:
     return None, None
 
 
+def _extract_month_range(text: str) -> Optional[Tuple[date, date]]:
+    t = text.lower()
+    m = re.search(r"\b(?:за|в)\s+([а-яё]+)\s+(\d{4})\b", t)
+    if not m:
+        return None
+
+    mon_raw = m.group(1)
+    year = int(m.group(2))
+
+    month = None
+    for k, v in _RU_MONTHS.items():
+        if mon_raw.startswith(k):
+            month = v
+            break
+    if not month:
+        return None
+
+    start = date(year, month, 1)
+    end = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    return start, end
+
+
+def _parse_id_after_id_word(text: str) -> Optional[str]:
+    t = text.lower()
+    m = re.search(r"\bid\s*[:=]?\s*([0-9a-f\-]{6,})\b", t)
+    if m:
+        return m.group(1)
+    n = _parse_int(t)
+    return str(n) if n is not None else None
+
+
 def _is_total_question(t: str) -> bool:
-    # общие/всего/суммарно/в сумме + количество/сколько
     return (
         ("общее" in t or "всего" in t or "суммар" in t or "в сумме" in t)
         and ("колич" in t or "сколько" in t or "сумм" in t)
@@ -83,29 +113,39 @@ def _is_total_question(t: str) -> bool:
 def nl_to_query(text: str) -> Query:
     t = " ".join((text or "").strip().lower().split())
 
-    # 0) total likes / views / comments / reports
-    # "Какое общее количество лайков набрали все видео?"
+    # totals
     if _is_total_question(t) and "лайк" in t:
         return Query("SELECT COALESCE(SUM(likes_count),0)::bigint FROM videos", {})
-
     if _is_total_question(t) and "просмотр" in t:
         return Query("SELECT COALESCE(SUM(views_count),0)::bigint FROM videos", {})
-
     if _is_total_question(t) and "коммент" in t:
         return Query("SELECT COALESCE(SUM(comments_count),0)::bigint FROM videos", {})
-
     if _is_total_question(t) and ("жалоб" in t or "репорт" in t or "report" in t):
         return Query("SELECT COALESCE(SUM(reports_count),0)::bigint FROM videos", {})
 
-    # 1) "Сколько всего видео есть в системе?"
+    # count all videos
     if re.search(r"\bсколько\b.*\bвсего\b.*\bвидео\b", t) or t == "сколько видео":
         return Query("SELECT COUNT(*)::bigint FROM videos", {})
 
-    # 2) "Сколько видео у креатора с id X вышло с ... по ..."
-    if ("креатор" in t or "creator" in t) and "id" in t and "видео" in t and ("вышло" in t or "вышли" in t):
-        creator_id = _parse_int(t)
+    # month query: "за май 2025"
+    mr = _extract_month_range(t)
+    if mr and "сколько" in t and "видео" in t:
+        start, end = mr
+        return Query(
+            """
+            SELECT COUNT(*)::bigint
+            FROM videos
+            WHERE video_created_at >= $1::date
+              AND video_created_at <  $2::date
+            """.strip(),
+            {"$1": start, "$2": end},
+        )
+
+    # creator + date range
+    if ("креатор" in t or "creator" in t) and "id" in t and "видео" in t and ("вышл" in t or "появ" in t or "опублик" in t):
+        creator_id = _parse_id_after_id_word(t)
         d1, d2 = _extract_date_range(t)
-        if creator_id is not None and d1 and d2:
+        if creator_id and d1 and d2:
             return Query(
                 """
                 SELECT COUNT(*)::bigint
@@ -114,19 +154,16 @@ def nl_to_query(text: str) -> Query:
                   AND video_created_at >= $2::date
                   AND video_created_at < ($3::date + interval '1 day')
                 """.strip(),
-                {"$1": creator_id, "$2": d1.isoformat(), "$3": d2.isoformat()},
+                {"$1": creator_id, "$2": d1, "$3": d2},
             )
 
-    # 3) "Сколько видео набрало больше 100000 просмотров"
+    # views greater than X
     if "видео" in t and ("просмотр" in t or "просмотров" in t) and ("больше" in t or "более" in t):
         x = _parse_int(t)
         if x is not None:
-            return Query(
-                "SELECT COUNT(*)::bigint FROM videos WHERE views_count > $1",
-                {"$1": x},
-            )
+            return Query("SELECT COUNT(*)::bigint FROM videos WHERE views_count > $1", {"$1": x})
 
-    # 4) "На сколько просмотров в сумме выросли все видео 28 ноября 2025?"
+    # sum delta views for a day
     if "в сумме" in t and "просмотр" in t and ("вырос" in t or "выросли" in t or "прирос" in t or "прирост" in t):
         d1, d2 = _extract_date_range(t)
         if d1 and d2 and d1 == d2:
@@ -137,10 +174,10 @@ def nl_to_query(text: str) -> Query:
                 WHERE created_at >= $1::date
                   AND created_at < ($1::date + interval '1 day')
                 """.strip(),
-                {"$1": d1.isoformat()},
+                {"$1": d1},
             )
 
-    # 5) "Сколько разных видео получали новые просмотры 27 ноября 2025?"
+    # distinct videos with new views for a day
     if "сколько" in t and ("разных" in t or "различных" in t) and "видео" in t and ("новые просмотры" in t or "новых просмотров" in t):
         d1, d2 = _extract_date_range(t)
         if d1 and d2 and d1 == d2:
@@ -152,7 +189,7 @@ def nl_to_query(text: str) -> Query:
                   AND created_at >= $1::date
                   AND created_at < ($1::date + interval '1 day')
                 """.strip(),
-                {"$1": d1.isoformat()},
+                {"$1": d1},
             )
 
     return Query("SELECT 0::bigint", {})
