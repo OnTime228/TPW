@@ -23,6 +23,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       DATA_PATH: ${DATA_PATH:-/data/videos.json}
       FORCE_RELOAD: ${FORCE_RELOAD:-0}
+
+      GIGACHAT_AUTH_KEY: ${GIGACHAT_AUTH_KEY}
+      GIGACHAT_SCOPE: ${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
+      GIGACHAT_MODEL: ${GIGACHAT_MODEL:-GigaChat-2-Max}
+      GIGACHAT_SSL_VERIFY: ${GIGACHAT_SSL_VERIFY:-0}
     volumes:
       - ./migrations:/migrations:ro
       - ./data:/data:ro

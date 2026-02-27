@@ -10,7 +10,8 @@ from aiogram.types import Message
 
 from app.settings import load_settings
 from app.loader import load_data_if_needed
-from app.nl2sql import nl_to_query
+from app.gigachat_client import GigaChatClient
+from app.llm_nl2sql import nl_to_query_llm
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("scarecrow_bot")
@@ -28,14 +29,14 @@ async def apply_migrations(conn: asyncpg.Connection) -> None:
         logger.info("Running migration: %s", f.name)
 
 
-async def handle_message(message: Message, pool: asyncpg.Pool) -> None:
-    q = nl_to_query(message.text or "")
+async def handle_message(message: Message, pool: asyncpg.Pool, gc: GigaChatClient) -> None:
+    q = await nl_to_query_llm(gc, message.text or "")
+
     try:
         async with pool.acquire() as conn:
-            params = []
-            for k in sorted(q.params.keys(), key=lambda x: int(x[1:])):  # "$1","$2",...
-                params.append(q.params[k])
-            val = await conn.fetchval(q.sql, *params)
+            # params keys are "$1", "$2"... -> pass in order
+            args = [q.params[k] for k in sorted(q.params.keys(), key=lambda x: int(x[1:]))]
+            val = await conn.fetchval(q.sql, *args)
             if val is None:
                 val = 0
     except Exception:
@@ -47,6 +48,13 @@ async def handle_message(message: Message, pool: asyncpg.Pool) -> None:
 
 async def main() -> None:
     settings = load_settings()
+
+    gc = GigaChatClient(
+        auth_key=settings.gigachat_auth_key,
+        scope=settings.gigachat_scope,
+        ssl_verify=settings.gigachat_ssl_verify,
+        model=settings.gigachat_model,
+    )
 
     pool = await asyncpg.create_pool(dsn=settings.dsn, min_size=1, max_size=10)
 
@@ -61,7 +69,7 @@ async def main() -> None:
 
     @dp.message()
     async def _any(message: Message) -> None:
-        await handle_message(message, pool)
+        await handle_message(message, pool, gc)
 
     logger.info("Start polling")
     await dp.start_polling(bot)
