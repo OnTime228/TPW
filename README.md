@@ -12,6 +12,6 @@
 
 3. Запустите:
 ```bash
-docker compose up --build
+docker compose up --build```
 
 4. Работает
